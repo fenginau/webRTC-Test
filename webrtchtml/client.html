@@ -1,0 +1,172 @@
+<html>
+<head>
+    <style>
+        video {
+            height: 400px;
+            margin: 0 0 20px 0;
+            vertical-align: top;
+            width: calc(50% - 12px);
+        }
+    </style>
+	<script src='jquery-1.11.2.min.js'></script>
+	<script src='jquery.signalR-2.2.0.min.js'></script>
+	<script src='adapter.js'></script>
+	<script src='https://careintheclouds.com.au/notification-test-feng/signalr/hubs'></script>
+</head>
+<body>
+<video id="localVideo" autoplay muted></video>
+<video id="remoteVideo" autoplay></video>
+
+<div>
+    <button id="startButton">Start</button>
+    <button id="callButton">Call</button>
+    <button id="hangupButton">Hang Up</button>
+</div>
+<br/>
+
+<script type="text/javascript">
+    $(function() {
+        //WebRTC
+        var startButton = document.getElementById('startButton');
+        var hangupButton = document.getElementById('hangupButton');
+        var callButton = document.getElementById('callButton');
+        var localVideo = document.getElementById('localVideo');
+        var remoteVideo = document.getElementById('remoteVideo');
+        var localStream;
+        var remoteStream;
+        var peerConnCfg = {
+            'iceServers':
+                [
+                    { 'urls': 'stun:stun.l.google.com:19302' }
+                ]
+        };
+        var peerConnection = null;
+
+        //Set the hubs URL for the connection
+		var proxyConnection = $.hubConnection();
+        //var agentID = 'testagent';
+        var clientId = 'testclient';
+		var notificationServer = 'https://careintheclouds.com.au/notification-test-feng/';
+		
+		proxyConnection.url = notificationServer + 'signalr';
+		proxyConnection.qs = 'hardware_id=' + clientId + '&connection_type=1';//1: from ANC, 0: from etp
+		
+		var video = proxyConnection.createHubProxy('callNotificationHub');
+		
+		proxyConnection.start().done(function () {
+			console.log('Connected to the notification server.')
+		})
+		.fail(function () {
+			alert('Cannot connect to the notification server.');
+			console.log('Cannot connect to the notification server.');
+		});
+		
+		var agentID;
+        video.on("requestCallListener", function (data) {
+			agentID = data;
+			video.invoke("responseCall",
+				agentID, JSON.stringify({ "response": true }))
+			.fail(function(error) {
+				console.log("Invocation of responseCall failed. Error: " + error);
+			});
+        });
+		
+		video.on("clientMessage", function (webRtcObj) {
+			var signal = JSON.parse(webRtcObj);
+			if (signal.endCall) {
+				endCall();
+			} else {
+				if (!peerConnection) {
+					answerCall();
+				}
+			}
+
+			if (signal.sdp) {
+				peerConnection.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+			} else if (signal.candidate) {
+				peerConnection.addIceCandidate(new RTCIceCandidate(signal.candidate));
+			}
+		});
+		
+		prepareCall = function () {
+            peerConnection = new RTCPeerConnection(peerConnCfg);
+            //peerConnection.ontrack = onAddStreamHandler;
+			peerConnection.oniceconnectionstatechange = function () {
+                console.log(peerConnection.iceConnectionState);
+                if (peerConnection.iceConnectionState == 'failed') {
+                    console.log('Network error, please try again.');
+                    alert('Network error, please try again.');
+                }
+                if (peerConnection.iceConnectionState == 'connected') {
+                    remoteVideo.srcObject = peerConnection.getRemoteStreams()[0];
+                    remoteStream = peerConnection.getRemoteStreams()[0];
+                }
+            };
+        };
+        answerCall = function () {
+            prepareCall();
+            // get the local stream, show it in the local video element and send it
+            navigator.mediaDevices.getUserMedia({
+                audio: true,
+                video: true
+            })
+                .then(function (stream) {
+                    gotStream(stream);
+                    peerConnection.addStream(localStream);
+                    createAndSendAnswer();
+                })
+                .catch(function (e) {
+                    alert("getUserMedia() error: " + e.name);
+                });
+
+        };
+        createAndSendAnswer = function () {
+            peerConnection.createAnswer(
+                function (answer) {
+                    var ans = new RTCSessionDescription(answer);
+                    peerConnection.setLocalDescription(ans,
+                        function () {
+                            video.invoke("sendData", agentID, JSON.stringify({ "sdp": ans }));
+                        },
+                        function (error) {
+                            console.log(error);
+                        }
+                    );
+                },
+                function (error) {
+                    console.log(error);
+                }
+            );
+        };
+
+        gotStream = function (stream) {
+            console.log("Received local stream");
+            localVideo = document.getElementById("localVideo");
+            localVideo.srcObject = stream;
+            localStream = stream;
+        };
+
+        onAddStreamHandler = function (evt) {
+            remoteVideo = document.getElementById("remoteVideo");console.log(1);
+            remoteVideo.srcObject = evt.streams[0];
+            remoteStream = evt.streams[0];
+        };
+        endCall = function () {
+            location.reload();
+        };
+
+        hangup = function () {
+            video.invoke("sendData", agentID, JSON.stringify({ "endCall": true }))
+                .done(function () {
+                    endCall();
+                })
+                .fail(function (error) {
+                    console.log("Invocation of sendData failed. Error: " + error);
+                });;
+        };
+
+    });
+
+</script>
+</body>
+</html>

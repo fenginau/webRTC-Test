@@ -1,0 +1,201 @@
+<html>
+<head>
+    <style>
+        video {
+            height: 400px;
+            margin: 0 0 20px 0;
+            vertical-align: top;
+            width: calc(50% - 12px);
+        }
+    </style>
+	<script src='jquery-1.11.2.min.js'></script>
+	<script src='jquery.signalR-2.2.0.min.js'></script>
+	<script src='adapter.js'></script>
+	<script src='https://careintheclouds.com.au/notification-test-feng/signalr/hubs'></script>
+</head>
+<body>
+<video id="localVideo" autoplay muted></video>
+<video id="remoteVideo" autoplay></video>
+
+<div>
+    <button id="startButton">Start</button>
+    <button id="callButton">Call</button>
+    <button id="hangupButton">Hang Up</button>
+</div>
+<br/>
+
+<script type="text/javascript">
+    $(function() {
+        //WebRTC
+        var startButton = document.getElementById('startButton');
+        var hangupButton = document.getElementById('hangupButton');
+        var callButton = document.getElementById('callButton');
+        var localVideo = document.getElementById('localVideo');
+        var remoteVideo = document.getElementById('remoteVideo');
+        var localStream;
+        var remoteStream;
+        var peerConnCfg = {
+            'iceServers':
+                [
+                    { 'urls': 'stun:stun.l.google.com:19302' }
+                ]
+        };
+        var peerConnection = null;
+
+        //Set the hubs URL for the connection
+		var proxyConnection = $.hubConnection();
+        var agentID = 'testagent';
+		var notificationServer = 'https://careintheclouds.com.au/notification-test-feng/';
+		
+		proxyConnection.url = notificationServer + 'signalr';
+		proxyConnection.qs = 'hardware_id=' + agentID + '&connection_type=0';//1: from ANC, 0: from etp
+		
+		var video = proxyConnection.createHubProxy('callNotificationHub');
+		
+		proxyConnection.start().done(function () {
+			console.log('Connected to the notification server.')
+		})
+		.fail(function () {
+			alert('Cannot connect to the notification server.');
+			console.log('Cannot connect to the notification server.');
+		});
+        var clientID = 'testclient';
+		
+        // Create a function that the hub can call to broadcast messages.
+        video.on('clientMessage', function (webrctInitUrl) {
+            var signal = JSON.parse(webrctInitUrl);
+
+            if (signal.sdp) {
+                peerConnection.setRemoteDescription(new RTCSessionDescription(signal.sdp));
+            } else if (signal.endCall) {
+                if (peerConnection != null) {
+                    endCall();
+                }
+            }
+        });
+        video.on('requestCallResponse', function (data) {
+            var d = JSON.parse(data);
+            if (d.response) {
+                console.log('call accepted');
+                call();
+            } else {
+                alert("Call Request have been canceled");
+            }
+        });
+
+        //Button Event
+        startButton.onclick = start;
+        callButton.onclick = function (e) {
+            video.invoke('requestCall', clientID, agentID);
+            return false;
+        };
+        hangupButton.onclick = function (e) {
+            video.invoke('sendData', clientID, JSON.stringify({ "endCall": true }));
+            endCall();
+            return false;
+        };
+
+
+        function start() {
+            console.log('Requesting local stream');
+            navigator.mediaDevices.getUserMedia({
+                audio: true,
+                video: true
+            })
+                .then(gotStream)
+                .catch(function (e) {
+                    alert('getUserMedia() error: ' + e.name);
+                });
+            return false;
+        }
+
+        function gotStream(stream) {
+            console.log('Received local stream');
+            localVideo.srcObject = stream;
+            localStream = stream;
+        }
+
+        function prepareCall() {
+            if (!RTCPeerConnection) {
+                RTCPeerConnection = RTCPeerConnection;
+            }
+
+            peerConnection = new RTCPeerConnection(peerConnCfg);
+            peerConnection.onicecandidate = onIceCandidateHandler;
+            //peerConnection.ontrack = onAddStreamHandler;
+            peerConnection.oniceconnectionstatechange = function () {
+                console.log(peerConnection.iceConnectionState);
+                if (peerConnection.iceConnectionState == 'failed') {
+                    console.log('Network error, please try again.');
+                    alert('Network error, please try again.');
+                }
+                if (peerConnection.iceConnectionState == 'completed' || peerConnection.iceConnectionState == 'connected') {
+                    remoteVideo.srcObject = peerConnection.getRemoteStreams()[0];
+                    remoteStream = peerConnection.getRemoteStreams()[0];
+                }
+                if (peerConnection.iceConnectionState == 'disconnected') {
+                    location.reload();
+                }
+            };
+        };
+
+        function call() {
+            prepareCall();
+            peerConnection.addStream(localStream);
+
+            peerConnection.createOffer(
+                function (offer) {
+                    var offer = new RTCSessionDescription(offer);
+                    //peerConnection.setLocalDescription(new RTCSessionDescription(offer),
+                    peerConnection.setLocalDescription(offer,
+                        function () {
+                            video.invoke('sendData', clientID, JSON.stringify({ "sdp": offer }));
+                        },
+                        function (error) {
+                            console.log(error);
+                        }
+                    );
+                },
+                function (error) {
+                    console.log(error);
+                }
+            );
+        }
+
+
+        function onIceCandidateHandler(evt) {
+            //console.log(evt);
+            if (!evt || !evt.candidate) return;
+            if (!evt.candidate) {
+                iceCandidate.push(evt.candidate);
+            }
+			console.log(evt.candidate);
+            video.invoke("sendData", clientID, JSON.stringify({ "candidate": evt.candidate }));
+        };
+
+        function onAddStreamHandler(evt) {
+            remoteVideo.srcObject = evt.streams[0];
+            remoteStream = evt.streams[0];
+        };
+
+        function endCall() {
+            if (peerConnection != null) {
+                //peerConnection = null;
+                //peerConnection.removeStream(winTop.localStream);
+                remoteStream = null;
+                localStream = null;
+                peerConnection.close();
+                location.reload();
+            }
+        };
+
+        function getURLParm(parm) {
+            return decodeURIComponent((new RegExp('[?|&]' + parm + '=' + '([^&;]+?)(&|#|;|$)').exec(location.search) || [null, ''])[1].replace(/\+/g, '%20')) || null;
+        }
+
+
+    });
+
+</script>
+</body>
+</html>
